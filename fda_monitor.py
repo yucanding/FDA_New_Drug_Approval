@@ -196,7 +196,17 @@ def main():
                 cols = row.find_all('td')
                 if len(cols) < 5: continue
                 
-                if "ORIG-1" not in cols[3].get_text().upper() or "Efficacy" not in cols[5].get_text(): continue
+                # 1. 提取对应列的值并统一转为大写（防止网页大小写变动导致失效）
+                sub_text = cols[3].get_text().upper()    # 对应 Submission
+                class_text = cols[5].get_text().upper()  # 对应 Submission Classification
+                
+                # 2. 定义命中条件
+                is_orig = "ORIG-1" in sub_text
+                is_efficacy = "EFFICACY" in class_text
+                
+                # 3. 核心逻辑：如果两个条件都不满足，则跳过（continue）
+                if not (is_orig or is_efficacy):
+                    continue
 
                 full_drug_text = cols[0].get_text(separator="\n", strip=True)
                 drug_name_only = full_drug_text.split('\n')[0].strip()
