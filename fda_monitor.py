@@ -196,7 +196,7 @@ def main():
                 cols = row.find_all('td')
                 if len(cols) < 5: continue
                 
-                if "ORIG-1" not in cols[3].get_text().upper(): continue
+                if "ORIG-1" not in cols[3].get_text().upper() or "Efficacy" not in cols[5].get_text(): continue
 
                 full_drug_text = cols[0].get_text(separator="\n", strip=True)
                 drug_name_only = full_drug_text.split('\n')[0].strip()
