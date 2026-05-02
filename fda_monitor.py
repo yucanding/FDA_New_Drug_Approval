@@ -208,6 +208,8 @@ def main():
                 if not (is_orig or is_efficacy):
                     continue
 
+                note_suffix = " (Efficacy更新)" if is_efficacy else ""
+
                 full_drug_text = cols[0].get_text(separator="\n", strip=True)
                 drug_name_only = full_drug_text.split('\n')[0].strip()
                 company = cols[4].get_text(strip=True)
@@ -228,7 +230,7 @@ def main():
                                 announcement_status = investigate_first_announcement(stock['ticker'], stock['name'], action_date)
                                 
                                 records_to_send.append({
-                                    "date": convert_date_to_chinese(action_date),
+                                    "date": convert_date_to_chinese(action_date) + note_suffix,
                                     "ticker": stock['ticker'],
                                     "company": company,
                                     "drug": drug_name_only,
