@@ -7,7 +7,7 @@ import io
 import os
 import urllib.parse
 import xml.etree.ElementTree as ET
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import feedparser
 from deep_translator import GoogleTranslator
 import pytz
@@ -99,6 +99,10 @@ def investigate_first_announcement(symbol, company_name, start_date_str):
     搜寻最早的一条官宣新闻，并返回推送状态文本
     """
     print(f"🔎 正在核实 ${symbol} 的首发官宣...")
+    
+    # 计算一个月前的时间基准点
+    one_month_ago = datetime.now(timezone.utc) - timedelta(days=30)
+    
     start_dt = datetime.strptime(start_date_str, "%m/%d/%Y").replace(tzinfo=timezone.utc)
     found_news = []
     headers = {'User-Agent': 'Mozilla/5.0'}
@@ -111,7 +115,9 @@ def investigate_first_announcement(symbol, company_name, start_date_str):
 
     st_url = f"https://www.stocktitan.net/rss/news/{symbol}"
     site_query = " OR ".join([f"site:{d}" for d in MAPPING.keys() if d != "stocktitan.net"])
-    g_query = f'({site_query}) ("{symbol}" OR "{company_name}")'
+    
+    # 【修改处 1】：在 Google 搜索词最后加上 " when:1m" 限制近一个月
+    g_query = f'({site_query}) ("{symbol}" OR "{company_name}") when:1m'
     g_url = f"https://news.google.com/rss/search?q={urllib.parse.quote(g_query)}&hl=en-US&gl=US&ceid=US:en"
 
     sources = [("SEC官网", sec_url), ("财经媒体", st_url), ("Google聚合", g_url)]
@@ -128,13 +134,20 @@ def investigate_first_announcement(symbol, company_name, start_date_str):
                     link = entry.find('atom:link', ns).attrib.get('href')
                     acc_node = entry.find('.//{*}acceptance-date-time')
                     dt_utc = datetime.fromisoformat(acc_node.text.replace('Z', '+00:00')) if acc_node is not None else datetime.now(timezone.utc)
+                    
+                    # 【修改处 2】：增加过滤，如果 SEC 发布的公告超过一个月则跳过
+                    if dt_utc < one_month_ago: continue
+                    
                     if any(k in title.upper() for k in ["FDA", "APPROVE", "APPROVAL"]):
                         found_news.append({"ts_utc": dt_utc, "link": link})
             else:
                 feed = feedparser.parse(io.BytesIO(resp.content))
                 for entry in feed.entries:
                     pub_ts = datetime(*entry.published_parsed[:6], tzinfo=timezone.utc)
-                    if pub_ts < start_dt: continue
+                    
+                    # 【修改处 3】：过滤修改，不仅要大于 start_dt，还要在过去一个月内
+                    if pub_ts < start_dt or pub_ts < one_month_ago: continue
+                    
                     if "FDA" in entry.title.upper() and ("APPROVE" in entry.title.upper() or "APPROVAL" in entry.title.upper()):
                         found_news.append({"ts_utc": pub_ts, "link": entry.link})
         except: continue
