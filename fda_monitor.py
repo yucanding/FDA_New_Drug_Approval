@@ -240,6 +240,9 @@ def main():
                             stock = get_verified_stock_data(company)
                             if stock:
                                 # 核心：获取官宣状态
+                                if len(stock['ticker']) > 4:
+                                    print(f"⏩ Ticker {stock['ticker']} 长度为 {len(stock['ticker'])}，超过4个字母，已跳过。")
+                                    continue
                                 announcement_status = investigate_first_announcement(stock['ticker'], stock['name'], action_date)
                                 
                                 records_to_send.append({
