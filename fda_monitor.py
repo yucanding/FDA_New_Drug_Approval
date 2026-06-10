@@ -44,14 +44,39 @@ def convert_date_to_chinese(date_str):
 def get_detailed_action_date(appl_no):
     url = f"https://www.accessdata.fda.gov/scripts/cder/daf/index.cfm?event=overview.process&ApplNo={appl_no}"
     try:
-        time.sleep(0.5)
+        # 增加一点延时，防止触发反爬或页面加载不全
+        time.sleep(1.0) 
         resp = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=15)
         soup = BeautifulSoup(resp.text, 'html.parser')
-        target_table = soup.find('table', id='exampleApplOrig')
-        if target_table:
-            date_td = target_table.find('tbody').find('tr').find('td')
-            if date_td: return date_td.get_text(strip=True)
-    except: pass
+        
+        all_dates = []
+        
+        # 同时扫描“原始获批”和“补充申请”两个表格，因为最新的变动通常在 Supplement 中
+        table_ids = ['exampleApplOrig', 'exampleApplSuppl']
+        
+        for table_id in table_ids:
+            table = soup.find('table', id=table_id)
+            if table and table.find('tbody'):
+                # 遍历所有行
+                for row in table.find('tbody').find_all('tr'):
+                    # 日期通常是每一行的第一个 td
+                    date_td = row.find('td')
+                    if date_td:
+                        date_str = date_td.get_text(strip=True)
+                        try:
+                            # 将日期字符串转为 datetime 对象以便比较
+                            dt = datetime.strptime(date_str, "%m/%d/%Y")
+                            all_dates.append(dt)
+                        except ValueError:
+                            continue
+        
+        if all_dates:
+            # 选出所有日期中最新的一个
+            latest_date = max(all_dates)
+            return latest_date.strftime("%m/%d/%Y")
+            
+    except Exception as e:
+        print(f"日期解析异常: {e}")
     return None
 
 def get_verified_stock_data(company_name):
