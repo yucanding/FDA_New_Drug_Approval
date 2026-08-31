@@ -101,7 +101,6 @@ def get_verified_stock_data(company_name):
             sector = info.get('sector', '')
             # C. 交易所校验（可选）：排除常见的非美股后缀
             if "." in ticker and not any(ext in ticker for ext in ["PK", "OB"]): 
-                # PK/OB 是美股OTC，如果连点都不要，就保持 if "." in ticker: continue
                 continue
 
             if sector == 'Healthcare' and currency == 'USD':
@@ -141,7 +140,6 @@ def investigate_first_announcement(symbol, company_name, start_date_str):
     st_url = f"https://www.stocktitan.net/rss/news/{symbol}"
     site_query = " OR ".join([f"site:{d}" for d in MAPPING.keys() if d != "stocktitan.net"])
     
-    # 【修改处 1】：在 Google 搜索词最后加上 " when:1m" 限制近一个月
     g_query = f'({site_query}) ("{symbol}" OR "{company_name}") when:1m'
     g_url = f"https://news.google.com/rss/search?q={urllib.parse.quote(g_query)}&hl=en-US&gl=US&ceid=US:en"
 
@@ -160,7 +158,6 @@ def investigate_first_announcement(symbol, company_name, start_date_str):
                     acc_node = entry.find('.//{*}acceptance-date-time')
                     dt_utc = datetime.fromisoformat(acc_node.text.replace('Z', '+00:00')) if acc_node is not None else datetime.now(timezone.utc)
                     
-                    # 【修改处 2】：增加过滤，如果 SEC 发布的公告超过一个月则跳过
                     if dt_utc < one_month_ago: continue
                     
                     if any(k in title.upper() for k in ["FDA", "APPROVE", "APPROVAL"]):
@@ -170,7 +167,6 @@ def investigate_first_announcement(symbol, company_name, start_date_str):
                 for entry in feed.entries:
                     pub_ts = datetime(*entry.published_parsed[:6], tzinfo=timezone.utc)
                     
-                    # 【修改处 3】：过滤修改，不仅要大于 start_dt，还要在过去一个月内
                     if pub_ts < start_dt or pub_ts < one_month_ago: continue
                     
                     if "FDA" in entry.title.upper() and ("APPROVE" in entry.title.upper() or "APPROVAL" in entry.title.upper()):
@@ -210,6 +206,7 @@ def main():
     fda_url = "https://www.accessdata.fda.gov/scripts/cder/daf/index.cfm?event=report.page"
     headers = {'User-Agent': 'Mozilla/5.0'}
     
+    # 读取历史记录（现在存储的是 unique_id，格式如 215866_SUPPL-45）
     if os.path.exists(ID_FILE):
         with open(ID_FILE, "r") as f:
             old_ids = set(f.read().splitlines())
@@ -225,6 +222,7 @@ def main():
         date_headers = tab_panel.find_all('h4')
         records_to_send = []
         current_all_ids = list(old_ids)
+        processed_this_run = set()  # 单次运行防重集合
 
         for header in date_headers:
             table = header.find_next('table')
@@ -234,15 +232,15 @@ def main():
                 cols = row.find_all('td')
                 if len(cols) < 5: continue
                 
-                # 1. 提取对应列的值并统一转为大写（防止网页大小写变动导致失效）
-                sub_text = cols[3].get_text().upper()    # 对应 Submission
+                # 1. 提取 Submission 和 Classification
+                sub_raw = cols[3].get_text(strip=True)
+                sub_text = sub_raw.upper()    # 对应 Submission (如 SUPPL-45)
                 class_text = cols[5].get_text().upper()  # 对应 Submission Classification
                 
                 # 2. 定义命中条件
                 is_orig = "ORIG-1" in sub_text
                 is_efficacy = "EFFICACY" in class_text
                 
-                # 3. 核心逻辑：如果两个条件都不满足，则跳过（continue）
                 if not (is_orig or is_efficacy):
                     continue
 
@@ -257,14 +255,20 @@ def main():
                     match = re.search(r'ApplNo=(\d+)', link_tag['href'])
                     if match:
                         appl_no = match.group(1)
-                        if appl_no not in old_ids:
+                        # 【核心修改】：组合成唯一的唯一键 (ApplNo + Submission)
+                        unique_id = f"{appl_no}_{sub_raw}"
+                        
+                        # 如果本轮已经处理过该 specific 申请，或者历史记录中已经存在，则跳过
+                        if unique_id in processed_this_run:
+                            continue
+                            
+                        if unique_id not in old_ids:
                             # 深度核查
                             action_date = get_detailed_action_date(appl_no)
                             if not action_date: continue
                             
                             stock = get_verified_stock_data(company)
                             if stock:
-                                # 核心：获取官宣状态
                                 if len(stock['ticker']) > 4:
                                     print(f"⏩ Ticker {stock['ticker']} 长度为 {len(stock['ticker'])}，超过4个字母，已跳过。")
                                     continue
@@ -280,7 +284,9 @@ def main():
                                     "status": announcement_status,
                                     "link": f"https://www.accessdata.fda.gov/scripts/cder/daf/index.cfm?event=overview.process&ApplNo={appl_no}"
                                 })
-                                current_all_ids.append(appl_no)
+                                
+                                processed_this_run.add(unique_id)
+                                current_all_ids.append(unique_id)
                                 time.sleep(1)
 
         if records_to_send:
@@ -292,7 +298,7 @@ def main():
                          f"    💊药品: {item['drug']}\n"
                          f"    💰市值: ${item['cap']:.2f}B\n"
                          f"    💵股价: ${item['price']:.2f}\n"
-                         f"    📢状态: {item['status']}\n" # <--- 新增的状态行
+                         f"    📢状态: {item['status']}\n"
                          f'    🔗<a href="{item["link"]}">点击查看FDA公告</a>')
                 msg_blocks.append(block)
             
@@ -300,7 +306,7 @@ def main():
             send_tg_message(final_msg)
             
             with open(LAST_SUCCESS_FILE, "w") as f: f.write(today_str)
-            with open(ID_FILE, "w") as f: f.write("\n".join(current_all_ids[-200:]))
+            with open(ID_FILE, "w") as f: f.write("\n".join(current_all_ids[-300:])) # 适当扩大保存容量
         else:
             print("💡 本次扫描没有发现符合条件的新获批。")
 
