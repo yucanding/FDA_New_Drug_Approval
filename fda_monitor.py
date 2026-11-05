@@ -79,76 +79,167 @@ def get_detailed_action_date(appl_no):
         print(f"日期解析异常: {e}")
     return None
 
+
 def get_verified_stock_data(company_name):
     try:
-        # 1. 对公司名进行预处理，去除 SAS, AG, LTD 等干扰
+        # 1. 公司名称预处理
         core_name = re.sub(
             r'(?i)\b(inc|corp|ltd|llc|co|company|plc|gmbh|sas|ag|se|s\.a\.s)\b|\.',
             '',
             company_name
         ).strip()
 
-        search = yf.Search(core_name, max_results=5)
+        # 2. 建立多个备用搜索词
+        words = core_name.split()
 
-        if not search.quotes:
-            print(f"⚠️ Yahoo Finance没有搜索结果: {company_name}")
+        search_terms = [
+            company_name,
+            core_name,
+            " ".join(words[:2]),
+            words[0] if words else ""
+        ]
+
+        # 去重并去除空字符串
+        search_terms = list(dict.fromkeys(
+            q.strip() for q in search_terms if q.strip()
+        ))
+
+        # 3. 已知公司名称的直接Ticker兜底
+        # 只补充明确对应的公司，不根据模糊名称随意认定母公司
+        normalized = company_name.lower()
+
+        direct_tickers = []
+        if "teva" in normalized:
+            direct_tickers.append("TEVA")
+
+        # 4. 先加入直接匹配结果
+        quotes = [
+            {"symbol": ticker}
+            for ticker in direct_tickers
+        ]
+
+        # 5. 多轮Yahoo Finance搜索
+        search_errors = []
+
+        for query in search_terms:
+            try:
+                search = yf.Search(
+                    query,
+                    max_results=10,
+                    enable_fuzzy_query=True
+                )
+
+                if search.quotes:
+                    print(
+                        f"🔎 Yahoo搜索成功: {company_name} "
+                        f"| 查询词: {query} "
+                        f"| 结果数: {len(search.quotes)}"
+                    )
+                    quotes.extend(search.quotes)
+                else:
+                    print(f"⚠️ Yahoo搜索无结果: {query}")
+
+            except Exception as e:
+                print(f"⚠️ Yahoo搜索异常 [{query}]: {e}")
+                search_errors.append(str(e))
+
+        # 6. Ticker去重
+        unique_quotes = {}
+        for quote in quotes:
+            ticker = quote.get("symbol")
+            if ticker:
+                unique_quotes[ticker] = quote
+
+        if not unique_quotes:
+            if search_errors:
+                raise RuntimeError(
+                    f"Yahoo Finance多轮搜索均未能正常完成: "
+                    f"{company_name}; {search_errors}"
+                )
+
+            print(f"⚠️ Yahoo Finance所有搜索词均无结果: {company_name}")
             return None
 
-        for quote in search.quotes:
-            ticker = quote.get('symbol')
-            if not ticker:
-                print(f"⚠️ Yahoo Finance搜索结果缺少Ticker: {company_name}")
-                continue
+        # 7. 逐个验证候选股票
+        for ticker, quote in unique_quotes.items():
+            try:
+                # 保留原来的非美股后缀过滤规则
+                if "." in ticker and not any(
+                    ext in ticker for ext in ["PK", "OB"]
+                ):
+                    continue
 
-            stock = yf.Ticker(ticker)
-            info = stock.info
+                stock = yf.Ticker(ticker)
+                info = stock.info
 
-            # A. 货币校验
-            currency = info.get('currency', info.get('financialCurrency', ''))
+                currency = info.get(
+                    'currency',
+                    info.get('financialCurrency', '')
+                )
+                sector = info.get('sector', '')
 
-            # B. 行业校验
-            sector = info.get('sector', '')
+                # 保留原来的行业和货币过滤
+                if sector != 'Healthcare' or currency != 'USD':
+                    continue
 
-            # C. 交易所校验
-            if "." in ticker and not any(ext in ticker for ext in ["PK", "OB"]):
-                continue
+                # 公司名称匹配：优先使用搜索结果中的名称
+                short_name = (
+                    quote.get('shortname')
+                    or quote.get('longname')
+                    or info.get('shortName')
+                    or info.get('longName')
+                    or ''
+                ).upper()
 
-            if sector == 'Healthcare' and currency == 'USD':
-                # 公司名称匹配
-                short_name = quote.get('shortname', '').upper()
+                first_word = words[0].upper() if words else ''
 
-                if core_name.upper().split()[0] in short_name:
+                if not first_word or first_word not in short_name:
+                    continue
 
-                    # 获取股价和市值
-                    try:
-                        price = stock.fast_info.last_price
-                        market_cap = stock.fast_info.market_cap
+                # 获取股价和市值
+                try:
+                    fast_info = stock.fast_info
+                    price = fast_info.last_price
+                    market_cap = fast_info.market_cap
 
-                        if price is None or market_cap is None:
-                            print(f"⚠️ {ticker} 缺少股价或市值数据")
-                            continue
-
-                        if market_cap <= 0 or price <= 0:
-                            print(f"⚠️ {ticker} 股价或市值数据无效")
-                            continue
-
-                    except Exception as e:
-                        print(f"⚠️ {ticker} 股价或市值获取失败: {e}")
+                    if price is None or market_cap is None:
+                        print(f"⚠️ {ticker} 缺少股价或市值数据")
                         continue
 
-                    return {
-                        "ticker": ticker,
-                        "name": quote.get('shortname', company_name),
-                        "price": price,
-                        "market_cap": market_cap / 1e9
-                    }
+                    if price <= 0 or market_cap <= 0:
+                        print(f"⚠️ {ticker} 股价或市值数据无效")
+                        continue
+
+                except Exception as e:
+                    print(f"⚠️ {ticker} 股价或市值获取失败: {e}")
+                    continue
+
+                print(
+                    f"✅ 公司匹配成功: {company_name} "
+                    f"-> {ticker} ({short_name})"
+                )
+
+                return {
+                    "ticker": ticker,
+                    "name": short_name,
+                    "price": price,
+                    "market_cap": market_cap / 1e9
+                }
+
+            except Exception as e:
+                print(f"⚠️ 候选股票验证失败 [{ticker}]: {e}")
+                continue
 
         print(f"⚠️ {company_name} 没有符合现有筛选条件的股票")
         return None
 
     except Exception as e:
-        print(f"❌ 股票检索异常 [{company_name}]: {type(e).__name__}: {e}")
+        print(
+            f"❌ 股票检索异常 [{company_name}]: "
+            f"{type(e).__name__}: {e}"
+        )
         raise
+
 
 def investigate_first_announcement(symbol, company_name, start_date_str):
     """
