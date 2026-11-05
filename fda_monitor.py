@@ -82,40 +82,72 @@ def get_detailed_action_date(appl_no):
 def get_verified_stock_data(company_name):
     try:
         # 1. 对公司名进行预处理，去除 SAS, AG, LTD 等干扰
-        core_name = re.sub(r'(?i)\b(inc|corp|ltd|llc|co|company|plc|gmbh|sas|ag|se|s\.a\.s)\b|\.', '', company_name).strip()
-        search = yf.Search(core_name, max_results=5) # 增加搜索范围
-        
-        if not search.quotes: return None
-        
+        core_name = re.sub(
+            r'(?i)\b(inc|corp|ltd|llc|co|company|plc|gmbh|sas|ag|se|s\.a\.s)\b|\.',
+            '',
+            company_name
+        ).strip()
+
+        search = yf.Search(core_name, max_results=5)
+
+        if not search.quotes:
+            print(f"⚠️ Yahoo Finance没有搜索结果: {company_name}")
+            return None
+
         for quote in search.quotes:
-            ticker = quote['symbol']
-            
-            # 获取 Ticker 对象
+            ticker = quote.get('symbol')
+            if not ticker:
+                print(f"⚠️ Yahoo Finance搜索结果缺少Ticker: {company_name}")
+                continue
+
             stock = yf.Ticker(ticker)
             info = stock.info
-            
-            # --- 核心过滤三要素 ---
-            # A. 货币校验：必须是美元（精准锁定美股市场）
+
+            # A. 货币校验
             currency = info.get('currency', info.get('financialCurrency', ''))
-            # B. 行业校验：医疗保健
+
+            # B. 行业校验
             sector = info.get('sector', '')
-            # C. 交易所校验（可选）：排除常见的非美股后缀
-            if "." in ticker and not any(ext in ticker for ext in ["PK", "OB"]): 
+
+            # C. 交易所校验
+            if "." in ticker and not any(ext in ticker for ext in ["PK", "OB"]):
                 continue
 
             if sector == 'Healthcare' and currency == 'USD':
-                # 额外增加一个名字包含检查，防止搜索偏移
+                # 公司名称匹配
                 short_name = quote.get('shortname', '').upper()
-                if core_name.upper().split()[0] in short_name: 
+
+                if core_name.upper().split()[0] in short_name:
+
+                    # 获取股价和市值
+                    try:
+                        price = stock.fast_info.last_price
+                        market_cap = stock.fast_info.market_cap
+
+                        if price is None or market_cap is None:
+                            print(f"⚠️ {ticker} 缺少股价或市值数据")
+                            continue
+
+                        if market_cap <= 0 or price <= 0:
+                            print(f"⚠️ {ticker} 股价或市值数据无效")
+                            continue
+
+                    except Exception as e:
+                        print(f"⚠️ {ticker} 股价或市值获取失败: {e}")
+                        continue
+
                     return {
-                        "ticker": ticker, 
+                        "ticker": ticker,
                         "name": quote.get('shortname', company_name),
-                        "price": stock.fast_info.last_price,
-                        "market_cap": stock.fast_info.market_cap / 1e9
+                        "price": price,
+                        "market_cap": market_cap / 1e9
                     }
+
+        print(f"⚠️ {company_name} 没有符合现有筛选条件的股票")
         return None
+
     except Exception as e:
-        print(f"股票检索异常 [{company_name}]: {e}")
+        print(f"❌ 股票检索异常 [{company_name}]: {type(e).__name__}: {e}")
         raise
 
 def investigate_first_announcement(symbol, company_name, start_date_str):
@@ -230,9 +262,15 @@ def main():
 
         for header in date_headers:
             table = header.find_next('table')
-            if not table: continue
-            
-            for row in table.find('tbody').find_all('tr'):
+            if not table:
+                continue
+        
+            tbody = table.find('tbody')
+            if not tbody:
+                print("⚠️ FDA列表表格缺少tbody，跳过该表格")
+                continue
+        
+            for row in tbody.find_all('tr'):
                 cols = row.find_all('td')
                 if len(cols) < 5: continue
                 
@@ -315,7 +353,8 @@ def main():
             print("💡 本次扫描没有发现符合条件的新获批。")
 
     except Exception as e:
-        print(f"🛑 运行异常: {e}")
+        print(f"🛑 运行异常: {type(e).__name__}: {e}")
+        raise
 
 if __name__ == "__main__":
     main()
