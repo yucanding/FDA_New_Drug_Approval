@@ -114,9 +114,9 @@ def get_verified_stock_data(company_name):
                         "market_cap": stock.fast_info.market_cap / 1e9
                     }
         return None
-    except Exception as e: 
-        print(f"股票检索异常: {e}")
-        return None
+    except Exception as e:
+        print(f"股票检索异常 [{company_name}]: {e}")
+        raise
 
 def investigate_first_announcement(symbol, company_name, start_date_str):
     """
@@ -215,9 +215,13 @@ def main():
 
     try:
         response = requests.get(fda_url, headers=headers, timeout=30)
+        response.raise_for_status()
+        
         soup = BeautifulSoup(response.text, 'html.parser')
         tab_panel = soup.find('div', id='example2-tab2')
-        if not tab_panel: return
+        
+        if not tab_panel:
+            raise RuntimeError("FDA页面未找到 example2-tab2，可能是页面结构变化或访问异常")
 
         date_headers = tab_panel.find_all('h4')
         records_to_send = []
