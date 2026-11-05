@@ -1,4 +1,3 @@
-
 name: FDA新药监控
 
 on:
@@ -25,7 +24,6 @@ jobs:
 
       - name: 安装依赖库
         run: |
-          python -m pip install --upgrade pip
           pip install requests beautifulsoup4 yfinance feedparser deep-translator pytz
 
       - name: 执行监控脚本
@@ -34,7 +32,6 @@ jobs:
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
         run: python fda_monitor.py
 
-      # 无论监控脚本成功还是失败，都尝试保存已更新的数据库
       - name: 保存运行记录
         if: always() && steps.checkout.outcome == 'success'
         run: |
@@ -43,18 +40,17 @@ jobs:
 
           touch last_fda_ids.txt last_success_date_drug.txt
 
-          git pull origin main --rebase
-
           git add last_fda_ids.txt last_success_date_drug.txt
 
           if ! git diff --cached --quiet; then
             git commit -m "更新FDA记录及状态 [$(date +'%Y-%m-%d %H:%M')]"
-            git push
           else
             echo "No changes to commit"
           fi
 
-      # 失败时发送简短 Telegram 通知，不发送日志和错误堆栈
+          git pull origin main --rebase
+          git push
+
       - name: 失败通知
         if: failure()
         env:
@@ -63,26 +59,18 @@ jobs:
           WORKFLOW_NAME: ${{ github.workflow }}
           RUN_NUMBER: ${{ github.run_number }}
         run: |
-          if [ -z "$TG_TOKEN" ] || [ -z "$TG_CHAT_ID" ]; then
-            echo "Telegram configuration missing"
-            exit 0
-          fi
-
-          MESSAGE="❌ GitHub Actions 执行失败
-          Workflow: ${WORKFLOW_NAME}
-          Run: #${RUN_NUMBER}
-          请前往 GitHub Actions 手动检查运行记录。"
-
           IFS=',' read -ra CHAT_IDS <<< "$TG_CHAT_ID"
 
-          for chat_id in "${CHAT_IDS[@]}"; do
-            chat_id=$(echo "$chat_id" | xargs)
-            [ -z "$chat_id" ] && continue
+          MESSAGE="❌ GitHub Actions 执行失败%0AWorkflow: ${WORKFLOW_NAME}%0ARun: #${RUN_NUMBER}%0A请前往 GitHub Actions 手动检查运行记录。"
 
-            curl --silent --show-error --output /dev/null --fail \
-              --max-time 20 \
+          for CHAT_ID in "${CHAT_IDS[@]}"; do
+            CHAT_ID=$(echo "$CHAT_ID" | xargs)
+            [ -z "$CHAT_ID" ] && continue
+
+            curl --silent --show-error --output /dev/null \
+              --fail --max-time 20 \
               -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
-              --data-urlencode "chat_id=${chat_id}" \
-              --data-urlencode "text=${MESSAGE}" \
+              -d "chat_id=${CHAT_ID}" \
+              --data-urlencode "text=$(echo -e "$MESSAGE" | sed 's/%0A/\n/g')" \
               || true
           done
