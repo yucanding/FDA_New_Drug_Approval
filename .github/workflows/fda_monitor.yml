@@ -1,28 +1,31 @@
+
 name: FDA新药监控
 
 on:
-  workflow_dispatch: # 供手动或外部触发
+  workflow_dispatch:
   schedule:
-    - cron: '0 13-22 * * 1-5' # 可选：周一至周五，美股交易时段每小时检查一次（UTC 13:00-22:00）
+    - cron: '0 13-22 * * 1-5'
 
 permissions:
   contents: write
 
 jobs:
   run_script:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+
     steps:
       - name: 检出代码
+        id: checkout
         uses: actions/checkout@v4
 
       - name: 安装环境
         uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: '3.11'
 
       - name: 安装依赖库
-        # ⚠️ 这里新增了脚本所需的全部依赖库
         run: |
+          python -m pip install --upgrade pip
           pip install requests beautifulsoup4 yfinance feedparser deep-translator pytz
 
       - name: 执行监控脚本
@@ -31,23 +34,55 @@ jobs:
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
         run: python fda_monitor.py
 
+      # 无论监控脚本成功还是失败，都尝试保存已更新的数据库
       - name: 保存运行记录
+        if: always() && steps.checkout.outcome == 'success'
         run: |
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
-          
-          # 确保文件存在，防止 git add 报错
+
           touch last_fda_ids.txt last_success_date_drug.txt
-          
-          # 先 pull 最新的变更，防止推送冲突
-          git pull origin main --rebase || echo "No changes to pull"
-          
+
+          git pull origin main --rebase
+
           git add last_fda_ids.txt last_success_date_drug.txt
-          
-          # 检查是否有文件更新，有则提交并推送
-          if [ -n "$(git status --porcelain)" ]; then
+
+          if ! git diff --cached --quiet; then
             git commit -m "更新FDA记录及状态 [$(date +'%Y-%m-%d %H:%M')]"
             git push
           else
             echo "No changes to commit"
           fi
+
+      # 失败时发送简短 Telegram 通知，不发送日志和错误堆栈
+      - name: 失败通知
+        if: failure()
+        env:
+          TG_TOKEN: ${{ secrets.TG_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          WORKFLOW_NAME: ${{ github.workflow }}
+          RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          if [ -z "$TG_TOKEN" ] || [ -z "$TG_CHAT_ID" ]; then
+            echo "Telegram configuration missing"
+            exit 0
+          fi
+
+          MESSAGE="❌ GitHub Actions 执行失败
+          Workflow: ${WORKFLOW_NAME}
+          Run: #${RUN_NUMBER}
+          请前往 GitHub Actions 手动检查运行记录。"
+
+          IFS=',' read -ra CHAT_IDS <<< "$TG_CHAT_ID"
+
+          for chat_id in "${CHAT_IDS[@]}"; do
+            chat_id=$(echo "$chat_id" | xargs)
+            [ -z "$chat_id" ] && continue
+
+            curl --silent --show-error --output /dev/null --fail \
+              --max-time 20 \
+              -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
+              --data-urlencode "chat_id=${chat_id}" \
+              --data-urlencode "text=${MESSAGE}" \
+              || true
+          done
