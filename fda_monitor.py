@@ -304,19 +304,44 @@ def investigate_first_announcement(symbol, company_name, start_date_str):
         return "暂未找到官宣信息"
 
 def send_tg_message(text):
-    if not TG_TOKEN or not TG_CHAT_ID or not text: return
-    target_ids = [chat_id.strip() for chat_id in TG_CHAT_ID.split(',') if chat_id.strip()]
+    if not TG_TOKEN or not TG_CHAT_ID or not text:
+        raise RuntimeError("Telegram配置缺失或消息为空")
+
+    target_ids = [
+        chat_id.strip()
+        for chat_id in TG_CHAT_ID.split(',')
+        if chat_id.strip()
+    ]
+
     url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
+    failed_ids = []
+
     for chat_id in target_ids:
         try:
-            requests.post(url, json={
-                "chat_id": chat_id, 
-                "text": text, 
-                "parse_mode": "HTML", 
+            response = requests.post(url, json={
+                "chat_id": chat_id,
+                "text": text,
+                "parse_mode": "HTML",
                 "disable_web_page_preview": True
             }, timeout=10)
+
+            response.raise_for_status()
+
+            result = response.json()
+            if not result.get("ok"):
+                failed_ids.append(chat_id)
+                print(f"⚠️ Telegram发送失败，Chat ID: {chat_id}")
+
         except Exception as e:
-            print(f"发送失败: {e}")
+            failed_ids.append(chat_id)
+            print(f"⚠️ Telegram发送异常，Chat ID: {chat_id}: {type(e).__name__}: {e}")
+
+    if failed_ids:
+        raise RuntimeError(
+            f"Telegram发送失败，涉及 {len(failed_ids)} 个Chat ID"
+        )
+
+    print(f"✅ Telegram发送成功，共发送至 {len(target_ids)} 个Chat ID")
 
 def main():
     today_str = datetime.now().strftime("%Y-%m-%d")
@@ -435,7 +460,7 @@ def main():
                          f'    🔗<a href="{item["link"]}">点击查看FDA公告</a>')
                 msg_blocks.append(block)
             
-            final_msg += "\n\n---------------\n\n".join(msg_blocks) + "\n\n#FDA #DrugApproval"
+            final_msg += "\n\n               \n\n".join(msg_blocks) + "\n\n#FDA #DrugApproval"
             send_tg_message(final_msg)
             
             with open(LAST_SUCCESS_FILE, "w") as f: f.write(today_str)
